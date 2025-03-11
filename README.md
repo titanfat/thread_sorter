@@ -3,7 +3,7 @@ Test external sorter with thread
 
 start engine.rb
 
-require Rspec test
+require Rspec test/ data generator. Data dir sorting_data
 
 ```
        user     system      total        real
