@@ -2,10 +2,11 @@
 
 require 'tempfile'
 require 'logger'
-require 'thread'
+require 'async/semaphore'
+require 'async'
 
 module ThreadSorter
-  class ExternalSort
+  class ExternalSortAsync
     MAX_THREADS = 4
     @@logger = Logger.new(STDOUT)
 
@@ -18,14 +19,15 @@ module ThreadSorter
       @output_file = File.join dir_path, output_path
 
       @pool_size ||= pool_size
-      @mutex = Mutex.new # можно использовать ractor для параллельных процессов, но тесты упадут
+      @async = Async::Semaphore.new(1)
       @temp_files = []
     end
 
     def sort
-      process_chunks
-      merge_chunks
-      @temp_files.each(&:unlink)
+      Async do
+        process_chunks
+        merge_chunks
+      end.wait
     end
 
     def merge_sort(arr)
@@ -52,7 +54,7 @@ module ThreadSorter
       temp = Tempfile.new(['chunk'], Dir.tmpdir)
       chunk.each { temp.write "#{_1.to_format}" }
       temp.flush
-      @mutex.synchronize { @temp_files << temp }
+      @async.async { @temp_files << temp }
     rescue StandardError => e
       @@logger.info temp.inspect, e unless temp
     end
@@ -65,13 +67,15 @@ module ThreadSorter
     private
 
     def process_chunks
-      threads = []
-      File.foreach(@file_path).each_slice(@pool_size) do |lines|
-        chunk = lines.map { parse_line _1 }
-        threads << Thread.new { save_chunk(merge_sort(chunk)) }
-        sleep(0.01) while threads.select(&:alive?).size > MAX_THREADS
-      end
-      threads.each(&:join)
+      Async do |task|
+        semaphore = Async::Semaphore.new(MAX_THREADS)
+        File.foreach(@file_path).each_slice(@pool_size) do |lines|
+          task.async(semaphore) do
+            chunk = lines.map { parse_line _1 }
+            save_chunk(merge_sort(chunk))
+          end
+        end
+      end.wait
     end
 
     def merge_chunks
