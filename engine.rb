@@ -7,15 +7,25 @@ require 'benchmark'
 module ThreadSorter
 
   def self.run
-    data_generate = ThreadSorter::DataGenerator.generate_csv(300)
-    sorter = ThreadSorter::ExternalSort.new(data_generate, 'sorted_transactions.csv')
-    sorter.sort
+    ThreadSorter::ExternalSort.new(generate_csv, 'sorted_transactions.csv').sort
   end
 
-  # def run_from_input(path, output_path, poll)
-  #   sorter = ExternalSort.new(path, output_path, poll)
-  #   sorter.sort
-  # end
+  def self.run_ractor
+    ThreadSorter::ExternalSortActor.new(generate_csv, 'sorted_transactions.csv').sort
+  end
+
+  def self.run_async
+    ThreadSorter::ExternalSortAsync.new(generate_csv, 'sorted_transactions.csv').sort
+  end
+
+  def self.run_from_input(path, output_path, poll)
+    ExternalSort.new(path, output_path, poll).sort
+  end
+
+  def self.generate_csv
+    ThreadSorter::DataGenerator.generate_csv(300)
+  end
 end
 
+# Benchmark.bm { |x| x.report { ThreadSorter.run } }
 ThreadSorter.run

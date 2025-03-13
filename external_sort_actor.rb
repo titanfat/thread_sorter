@@ -2,14 +2,13 @@
 
 require 'tempfile'
 require 'logger'
-require 'thread'
 
 module ThreadSorter
-  class ExternalSort
+  class ExternalSortActor
     MAX_THREADS = 4
     @@logger = Logger.new(STDOUT)
 
-    attr_reader :output_file, :temp_files
+    attr_reader :output_file
 
     def initialize(file_path, output_path = 'sorted_transactions', pool_size = 100)
       @file_path = file_path
@@ -18,21 +17,31 @@ module ThreadSorter
       @output_file = File.join dir_path, output_path
 
       @pool_size ||= pool_size
-      @mutex = Mutex.new # можно использовать ractor для параллельных процессов, но тесты упадут
-      @temp_files = []
+      @actor = Ractor.new do
+        temp_files = []
+        loop do
+          msg = Ractor.receive
+          case msg
+          when :get_files then Ractor.yield temp_files
+          else temp_files << msg
+          end
+        end
+      end
     end
 
     def sort
-      process_chunks
+      process_chunks { save_chunk(merge_sort _1) }
       merge_chunks
-      @temp_files.each(&:unlink)
+      @actor.send(:get_files)
+      @actor.take.each(&:unlink)
     end
 
     def merge_sort(arr)
       return arr if arr.size <= 1
 
       mid = arr.size / 2
-      left, right = merge_sort(arr[0...mid]), merge_sort(arr[mid..])
+      left = merge_sort(arr[0...mid])
+      right = merge_sort(arr[mid..])
       merge(left, right)
     end
 
@@ -52,7 +61,7 @@ module ThreadSorter
       temp = Tempfile.new(['chunk'], Dir.tmpdir)
       chunk.each { temp.write "#{_1.to_format}" }
       temp.flush
-      @mutex.synchronize { @temp_files << temp }
+      @actor.send temp
     rescue StandardError => e
       @@logger.info temp.inspect, e unless temp
     end
@@ -68,36 +77,33 @@ module ThreadSorter
       threads = []
       File.foreach(@file_path).each_slice(@pool_size) do |lines|
         chunk = lines.map { parse_line _1 }
-        threads << Thread.new { save_chunk(merge_sort(chunk)) }
-        sleep(0.01) while threads.select(&:alive?).size > MAX_THREADS
+        threads << Thread.new { yield chunk }
+        sleep(0.02) while threads.count(&:alive?) >= MAX_THREADS
       end
-      threads.each(&:join)
+        threads.each(&:join)
     end
 
     def merge_chunks
-      temp_handler = @temp_files.map { [_1, _1.open] }.to_h
-      curr_transaction = temp_handler.map do |file, f|
-        line = f.gets
-        line ? { transaction: parse_line(line), file: File.open(file.path) } : nil
+      @actor.send(:get_files)
+      temp_files = @actor.take
+      temp_handler = temp_files.map { { file: _1, handler: File.open(_1.path, 'r') } }
+      curr_transaction = temp_handler.map do
+        line = _1[:handler].gets
+        line ? { transaction: parse_line(line), **_1 } : nil
       end.compact
 
-
       file = File.open(@output_file, 'w')
-      begin
-        until curr_transaction.empty?
-          max_entry = curr_transaction.max_by { _1[:transaction].amount }
-          file.puts(max_entry[:transaction].to_format)
+      until curr_transaction.empty?
+        max_entry = curr_transaction.max_by { _1[:transaction].amount }
+        file.puts(max_entry[:transaction].to_format)
 
-          next_line = max_entry[:file].gets
-          if next_line
-            max_entry[:transaction] = parse_line(next_line)
-          else
-            max_entry[:file].close
-            curr_transaction.delete(max_entry)
-          end
+        next_line = max_entry[:handler].gets
+        if next_line
+          max_entry[:transaction] = parse_line(next_line)
+        else
+          max_entry[:handler].close
+          curr_transaction.delete(max_entry)
         end
-      ensure
-        file&.close
       end
     end
   end

@@ -1,5 +1,6 @@
 source 'https://rubygems.org'
 
-gem "rspec"
-gem "zeitwerk"
-gem "byebug"
+gem 'rspec'
+gem 'zeitwerk'
+gem 'byebug'
+gem 'async'
